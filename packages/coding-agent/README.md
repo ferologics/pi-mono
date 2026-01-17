@@ -339,6 +339,8 @@ Both modes are configurable via `/settings`: "one-at-a-time" delivers messages o
 | Ctrl+W / Option+Backspace | Delete word backwards |
 | Ctrl+U | Delete to start of line |
 | Ctrl+K | Delete to end of line |
+| Ctrl+Z / Cmd+Z | Undo (conflicts with suspend by default, remap `suspend` to use) |
+| Ctrl+Y / Ctrl+Shift+Z | Redo |
 
 **Other:**
 
@@ -386,6 +388,8 @@ All keyboard shortcuts can be customized via `~/.pi/agent/keybindings.json`. Eac
 | `deleteWordBackward` | `ctrl+w`, `alt+backspace` | Delete word backward |
 | `deleteToLineStart` | `ctrl+u` | Delete to line start |
 | `deleteToLineEnd` | `ctrl+k` | Delete to line end |
+| `undo` | `ctrl+z` | Undo (conflicts with `suspend` by default) |
+| `redo` | `ctrl+y`, `ctrl+shift+z` | Redo |
 | `newLine` | `shift+enter` | Insert new line |
 | `submit` | `enter` | Submit input |
 | `tab` | `tab` | Tab/autocomplete |

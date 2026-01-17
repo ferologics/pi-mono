@@ -13,6 +13,181 @@ function createTestTUI(cols = 80, rows = 24): TUI {
 }
 
 describe("Editor component", () => {
+	describe("Undo/redo", () => {
+		const UNDO = "\x1a"; // Ctrl+Z
+		const REDO = "\x19"; // Ctrl+Y
+
+		it("undoes character insertions", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("a");
+			editor.handleInput("b");
+			editor.handleInput("c");
+
+			assert.strictEqual(editor.getText(), "abc");
+
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "");
+		});
+
+		it("undoes separate typing sessions after word boundary", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("a");
+			editor.handleInput("b");
+
+			// Space creates word boundary, starts new undo group
+			editor.handleInput(" ");
+			editor.handleInput("c");
+			editor.handleInput("d");
+
+			assert.strictEqual(editor.getText(), "ab cd");
+
+			editor.handleInput(UNDO); // Undo "cd"
+			assert.strictEqual(editor.getText(), "ab ");
+
+			editor.handleInput(UNDO); // Undo "ab "
+			assert.strictEqual(editor.getText(), "");
+		});
+
+		it("undoes deletions separately from insertions", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("hello");
+			editor.handleInput("\x7f"); // Backspace
+			editor.handleInput("\x7f"); // Backspace
+
+			assert.strictEqual(editor.getText(), "hel");
+
+			editor.handleInput(UNDO); // Undo deletions
+			assert.strictEqual(editor.getText(), "hello");
+
+			editor.handleInput(UNDO); // Undo insertions
+			assert.strictEqual(editor.getText(), "");
+		});
+
+		it("redoes undone changes", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("hello");
+			assert.strictEqual(editor.getText(), "hello");
+
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "");
+
+			editor.handleInput(REDO);
+			assert.strictEqual(editor.getText(), "hello");
+		});
+
+		it("clears redo stack on new edit after undo", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("hello");
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "");
+
+			// New edit should clear redo stack
+			editor.handleInput("x");
+			assert.strictEqual(editor.getText(), "x");
+
+			// Redo should do nothing now
+			editor.handleInput(REDO);
+			assert.strictEqual(editor.getText(), "x");
+		});
+
+		it("handles undo with empty stack gracefully", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			// Undo on empty editor should do nothing
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "");
+		});
+
+		it("handles redo with empty stack gracefully", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("hello");
+
+			// Redo without prior undo should do nothing
+			editor.handleInput(REDO);
+			assert.strictEqual(editor.getText(), "hello");
+		});
+
+		it("restores cursor position on undo", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("hello");
+			editor.handleInput(" "); // Space coalesces with "hello"
+
+			// Capture cursor after "hello "
+			const cursorAfterHelloSpace = editor.getCursor();
+			assert.deepStrictEqual(cursorAfterHelloSpace, { line: 0, col: 6 });
+
+			editor.handleInput("world"); // Starts new group (after space)
+
+			editor.handleInput(UNDO); // Undo "world" -> back to "hello "
+			assert.deepStrictEqual(editor.getCursor(), cursorAfterHelloSpace);
+			assert.strictEqual(editor.getText(), "hello ");
+
+			editor.handleInput(UNDO); // Undo "hello " -> back to empty
+			assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 0 });
+			assert.strictEqual(editor.getText(), "");
+		});
+
+		it("undoes paste as a single operation", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("start ");
+
+			// Simulate bracketed paste
+			editor.handleInput("\x1b[200~pasted text\x1b[201~");
+
+			assert.strictEqual(editor.getText(), "start pasted text");
+
+			editor.handleInput(UNDO); // Undo paste
+			assert.strictEqual(editor.getText(), "start ");
+		});
+
+		it("undoes newline as a separate operation", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("line1");
+			editor.handleInput("\x1b[13;2u"); // Shift+Enter (newline)
+			editor.handleInput("line2");
+
+			assert.strictEqual(editor.getText(), "line1\nline2");
+
+			editor.handleInput(UNDO); // Undo "line2"
+			assert.strictEqual(editor.getText(), "line1\n");
+
+			editor.handleInput(UNDO); // Undo newline
+			assert.strictEqual(editor.getText(), "line1");
+		});
+
+		it("groups continuous typing until word boundary", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("w");
+			editor.handleInput("o");
+			editor.handleInput("r");
+			editor.handleInput("d");
+			editor.handleInput(" "); // Word boundary
+			editor.handleInput("t");
+			editor.handleInput("w");
+			editor.handleInput("o");
+
+			assert.strictEqual(editor.getText(), "word two");
+
+			// Undo should remove "two" (typed after space)
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "word ");
+
+			// Undo should remove "word " (including the space that broke the group)
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "");
+		});
+	});
+
 	describe("Prompt history navigation", () => {
 		it("does nothing on Up arrow when history is empty", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);

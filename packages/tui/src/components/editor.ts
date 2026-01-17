@@ -283,6 +283,13 @@ export class Editor implements Component, Focusable {
 	private history: string[] = [];
 	private historyIndex: number = -1; // -1 = not browsing, 0 = most recent, 1 = older, etc.
 
+	// Undo/redo support
+	private undoStack: EditorState[] = [];
+	private redoStack: EditorState[] = [];
+	private lastEditTime: number = 0;
+	private lastEditType: "insert" | "delete" | "other" | null = null;
+	private lastInsertedChar: string = "";
+
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
 	public disableSubmit: boolean = false;
@@ -357,6 +364,125 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+	}
+
+	/**
+	 * Check if we should start a new undo group or coalesce with the previous edit.
+	 */
+	private shouldStartNewUndoGroup(editType: "insert" | "delete" | "other"): boolean {
+		// Always start new group if stack is empty
+		if (this.undoStack.length === 0) return true;
+		// Different edit type (insert vs delete) breaks the group
+		if (editType !== this.lastEditType) return true;
+		// Time gap breaks the group (500ms)
+		if (Date.now() - this.lastEditTime > 500) return true;
+		// "other" edits (paste, newline) always start new group
+		if (editType === "other") return true;
+		// Word boundary: if last inserted char was whitespace or punctuation, start new group
+		if (
+			editType === "insert" &&
+			this.lastInsertedChar &&
+			(isWhitespaceChar(this.lastInsertedChar) || isPunctuationChar(this.lastInsertedChar))
+		) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Push current state to undo stack if starting a new group.
+	 * Call this BEFORE making any changes to state.
+	 */
+	private pushUndoState(editType: "insert" | "delete" | "other", insertedChar: string = ""): void {
+		if (this.shouldStartNewUndoGroup(editType)) {
+			this.undoStack.push({
+				lines: [...this.state.lines],
+				cursorLine: this.state.cursorLine,
+				cursorCol: this.state.cursorCol,
+			});
+			// Cap stack size
+			if (this.undoStack.length > 100) {
+				this.undoStack.shift();
+			}
+		}
+		// Clear redo stack on new edit
+		this.redoStack = [];
+		// Update tracking state
+		this.lastEditTime = Date.now();
+		this.lastEditType = editType;
+		this.lastInsertedChar = insertedChar;
+	}
+
+	/**
+	 * Undo the last edit group.
+	 */
+	private undo(): void {
+		if (this.undoStack.length === 0) return;
+
+		// Push current state to redo stack
+		this.redoStack.push({
+			lines: [...this.state.lines],
+			cursorLine: this.state.cursorLine,
+			cursorCol: this.state.cursorCol,
+		});
+
+		// Restore previous state
+		const prev = this.undoStack.pop()!;
+		this.state.lines = prev.lines;
+		this.state.cursorLine = prev.cursorLine;
+		this.state.cursorCol = prev.cursorCol;
+
+		// Reset coalescing state
+		this.lastEditType = null;
+		this.lastInsertedChar = "";
+
+		// Reset scroll - render() will adjust to show cursor
+		this.scrollOffset = 0;
+
+		if (this.onChange) {
+			this.onChange(this.getText());
+		}
+	}
+
+	/**
+	 * Redo the last undone edit group.
+	 */
+	private redo(): void {
+		if (this.redoStack.length === 0) return;
+
+		// Push current state to undo stack
+		this.undoStack.push({
+			lines: [...this.state.lines],
+			cursorLine: this.state.cursorLine,
+			cursorCol: this.state.cursorCol,
+		});
+
+		// Restore from redo stack
+		const next = this.redoStack.pop()!;
+		this.state.lines = next.lines;
+		this.state.cursorLine = next.cursorLine;
+		this.state.cursorCol = next.cursorCol;
+
+		// Reset coalescing state
+		this.lastEditType = null;
+		this.lastInsertedChar = "";
+
+		// Reset scroll - render() will adjust to show cursor
+		this.scrollOffset = 0;
+
+		if (this.onChange) {
+			this.onChange(this.getText());
+		}
+	}
+
+	/**
+	 * Clear undo/redo stacks (called on submit).
+	 */
+	private clearUndoHistory(): void {
+		this.undoStack = [];
+		this.redoStack = [];
+		this.lastEditType = null;
+		this.lastInsertedChar = "";
 	}
 
 	invalidate(): void {
@@ -595,6 +721,16 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
+		// Undo/redo
+		if (kb.matches(data, "undo")) {
+			this.undo();
+			return;
+		}
+		if (kb.matches(data, "redo")) {
+			this.redo();
+			return;
+		}
+
 		// Deletion actions
 		if (kb.matches(data, "deleteToLineEnd")) {
 			this.deleteToEndOfLine();
@@ -664,6 +800,7 @@ export class Editor implements Component, Focusable {
 			this.pasteCounter = 0;
 			this.historyIndex = -1;
 			this.scrollOffset = 0;
+			this.clearUndoHistory();
 
 			if (this.onChange) this.onChange("");
 			if (this.onSubmit) this.onSubmit(result);
@@ -841,6 +978,7 @@ export class Editor implements Component, Focusable {
 
 	setText(text: string): void {
 		this.historyIndex = -1; // Exit history browsing mode
+		this.pushUndoState("other");
 		this.setTextInternal(text);
 	}
 
@@ -849,6 +987,9 @@ export class Editor implements Component, Focusable {
 	 * Used for programmatic insertion (e.g., clipboard image markers).
 	 */
 	insertTextAtCursor(text: string): void {
+		// Push undo state before the first character insertion
+		// (individual insertCharacter calls will coalesce as needed)
+		this.pushUndoState("other");
 		for (const char of text) {
 			this.insertCharacter(char);
 		}
@@ -857,6 +998,7 @@ export class Editor implements Component, Focusable {
 	// All the editor methods from before...
 	private insertCharacter(char: string): void {
 		this.historyIndex = -1; // Exit history browsing mode
+		this.pushUndoState("insert", char);
 
 		const line = this.state.lines[this.state.cursorLine] || "";
 
@@ -906,6 +1048,7 @@ export class Editor implements Component, Focusable {
 
 	private handlePaste(pastedText: string): void {
 		this.historyIndex = -1; // Exit history browsing mode
+		this.pushUndoState("other");
 
 		// Clean the pasted text
 		const cleanText = pastedText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -945,18 +1088,33 @@ export class Editor implements Component, Focusable {
 				pastedLines.length > 10
 					? `[paste #${pasteId} +${pastedLines.length} lines]`
 					: `[paste #${pasteId} ${totalChars} chars]`;
-			for (const char of marker) {
-				this.insertCharacter(char);
+
+			// Insert marker directly without calling insertCharacter
+			const currentLine = this.state.lines[this.state.cursorLine] || "";
+			const before = currentLine.slice(0, this.state.cursorCol);
+			const after = currentLine.slice(this.state.cursorCol);
+			this.state.lines[this.state.cursorLine] = before + marker + after;
+			this.state.cursorCol += marker.length;
+
+			if (this.onChange) {
+				this.onChange(this.getText());
 			}
 
 			return;
 		}
 
 		if (pastedLines.length === 1) {
-			// Single line - just insert each character
+			// Single line - insert directly without calling insertCharacter
+			// (to avoid multiple undo states)
 			const text = pastedLines[0] || "";
-			for (const char of text) {
-				this.insertCharacter(char);
+			const currentLine = this.state.lines[this.state.cursorLine] || "";
+			const before = currentLine.slice(0, this.state.cursorCol);
+			const after = currentLine.slice(this.state.cursorCol);
+			this.state.lines[this.state.cursorLine] = before + text + after;
+			this.state.cursorCol += text.length;
+
+			if (this.onChange) {
+				this.onChange(this.getText());
 			}
 
 			return;
@@ -1006,6 +1164,7 @@ export class Editor implements Component, Focusable {
 
 	private addNewLine(): void {
 		this.historyIndex = -1; // Exit history browsing mode
+		this.pushUndoState("other");
 
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 
@@ -1027,6 +1186,7 @@ export class Editor implements Component, Focusable {
 
 	private handleBackspace(): void {
 		this.historyIndex = -1; // Exit history browsing mode
+		this.pushUndoState("delete");
 
 		if (this.state.cursorCol > 0) {
 			// Delete grapheme before cursor (handles emojis, combining characters, etc.)
@@ -1088,6 +1248,7 @@ export class Editor implements Component, Focusable {
 
 	private deleteToStartOfLine(): void {
 		this.historyIndex = -1; // Exit history browsing mode
+		this.pushUndoState("delete");
 
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 
@@ -1111,6 +1272,7 @@ export class Editor implements Component, Focusable {
 
 	private deleteToEndOfLine(): void {
 		this.historyIndex = -1; // Exit history browsing mode
+		this.pushUndoState("delete");
 
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 
@@ -1131,6 +1293,7 @@ export class Editor implements Component, Focusable {
 
 	private deleteWordBackwards(): void {
 		this.historyIndex = -1; // Exit history browsing mode
+		this.pushUndoState("delete");
 
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 
@@ -1161,6 +1324,7 @@ export class Editor implements Component, Focusable {
 
 	private handleForwardDelete(): void {
 		this.historyIndex = -1; // Exit history browsing mode
+		this.pushUndoState("delete");
 
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 

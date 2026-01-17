@@ -35,7 +35,10 @@ export type EditorAction =
 	// Clipboard
 	| "copy"
 	// Tool output
-	| "expandTools";
+	| "expandTools"
+	// Undo/redo
+	| "undo"
+	| "redo";
 
 // Re-export KeyId from keys.ts
 export type { KeyId };
@@ -83,6 +86,9 @@ export const DEFAULT_EDITOR_KEYBINDINGS: Required<EditorKeybindingsConfig> = {
 	copy: "ctrl+c",
 	// Tool output
 	expandTools: "ctrl+o",
+	// Undo/redo
+	undo: "ctrl+z",
+	redo: ["ctrl+y", "ctrl+shift+z"],
 };
 
 /**
