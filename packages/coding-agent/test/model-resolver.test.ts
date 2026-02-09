@@ -1,5 +1,5 @@
 import type { Model } from "@mariozechner/pi-ai";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
 	defaultModelPerProvider,
 	findInitialModel,
@@ -118,18 +118,26 @@ describe("parseModelPattern", () => {
 	});
 
 	describe("ambiguous exact IDs across providers", () => {
-		test("uses first exact match when no preferred provider is given", () => {
+		test("uses first exact match and warns when ID exists in multiple providers", () => {
 			const result = parseModelPattern("gpt-5.3-codex", mockAmbiguousProviderModels);
 			expect(result.model?.provider).toBe("openai");
 			expect(result.model?.id).toBe("gpt-5.3-codex");
-			expect(result.warning).toBeUndefined();
+			expect(result.warning).toContain('Ambiguous model ID "gpt-5.3-codex"');
 		});
 
-		test("uses preferred provider when exact ID exists across multiple providers", () => {
+		test("does not switch providers even when default provider is supplied", () => {
 			const result = parseModelPattern("gpt-5.3-codex", mockAmbiguousProviderModels, "openai-codex");
-			expect(result.model?.provider).toBe("openai-codex");
+			expect(result.model?.provider).toBe("openai");
 			expect(result.model?.id).toBe("gpt-5.3-codex");
-			expect(result.warning).toBeUndefined();
+			expect(result.warning).toContain('Ambiguous model ID "gpt-5.3-codex"');
+			expect(result.warning).toContain('defaultProvider: "openai-codex"');
+		});
+
+		test("keeps explicit thinking level while warning about ambiguity", () => {
+			const result = parseModelPattern("gpt-5.3-codex:high", mockAmbiguousProviderModels);
+			expect(result.model?.provider).toBe("openai");
+			expect(result.thinkingLevel).toBe("high");
+			expect(result.warning).toContain('Ambiguous model ID "gpt-5.3-codex"');
 		});
 	});
 
@@ -251,18 +259,28 @@ describe("parseModelPattern", () => {
 });
 
 describe("resolveModelScope", () => {
-	test("uses preferred provider for ambiguous exact IDs", async () => {
+	test("warns and keeps first exact match for ambiguous exact IDs", async () => {
 		const registry = {
 			getAvailable: async () => mockAmbiguousProviderModels,
 		} as unknown as Parameters<typeof resolveModelScope>[1];
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-		const scopedModels = await resolveModelScope(["gpt-5.3-codex"], registry, {
-			preferredProvider: "openai-codex",
-		});
+		try {
+			const scopedModels = await resolveModelScope(["gpt-5.3-codex"], registry, {
+				preferredProvider: "openai-codex",
+			});
 
-		expect(scopedModels).toHaveLength(1);
-		expect(scopedModels[0].model.provider).toBe("openai-codex");
-		expect(scopedModels[0].model.id).toBe("gpt-5.3-codex");
+			expect(scopedModels).toHaveLength(1);
+			expect(scopedModels[0].model.provider).toBe("openai");
+			expect(scopedModels[0].model.id).toBe("gpt-5.3-codex");
+			expect(
+				warnSpy.mock.calls.some(
+					(call) => typeof call[0] === "string" && call[0].includes('Ambiguous model ID "gpt-5.3-codex"'),
+				),
+			).toBe(true);
+		} finally {
+			warnSpy.mockRestore();
+		}
 	});
 });
 

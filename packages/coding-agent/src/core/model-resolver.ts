@@ -57,13 +57,13 @@ function isAlias(id: string): boolean {
 
 /**
  * Try to match a pattern to a model from the available models list.
- * Returns the matched model or undefined if no match found.
+ * Returns the matched model and optional warning details.
  */
 function tryMatchModel(
 	modelPattern: string,
 	availableModels: Model<Api>[],
 	preferredProvider?: string,
-): Model<Api> | undefined {
+): Pick<ParsedModelResult, "model" | "warning" | "warningType"> {
 	// Check for provider/modelId format (provider is everything before the first /)
 	const slashIndex = modelPattern.indexOf("/");
 	if (slashIndex !== -1) {
@@ -73,7 +73,7 @@ function tryMatchModel(
 			(m) => m.provider.toLowerCase() === provider.toLowerCase() && m.id.toLowerCase() === modelId.toLowerCase(),
 		);
 		if (providerMatch) {
-			return providerMatch;
+			return { model: providerMatch, warning: undefined, warningType: undefined };
 		}
 		// No exact provider/model match - fall through to other matching
 	}
@@ -81,13 +81,20 @@ function tryMatchModel(
 	// Check for exact ID match (case-insensitive)
 	const exactMatches = availableModels.filter((m) => m.id.toLowerCase() === modelPattern.toLowerCase());
 	if (exactMatches.length > 0) {
-		if (preferredProvider) {
-			const preferredMatch = exactMatches.find((m) => m.provider.toLowerCase() === preferredProvider.toLowerCase());
-			if (preferredMatch) {
-				return preferredMatch;
-			}
+		const chosenMatch = exactMatches[0];
+		if (exactMatches.length > 1) {
+			const availableVia = exactMatches.map((m) => `${m.provider}/${m.id}`).join(", ");
+			const hasPreferredMatch =
+				preferredProvider !== undefined &&
+				exactMatches.some((m) => m.provider.toLowerCase() === preferredProvider.toLowerCase());
+			const defaultProviderHint = hasPreferredMatch ? ` (defaultProvider: "${preferredProvider}")` : "";
+			return {
+				model: chosenMatch,
+				warningType: "ambiguous-model-id",
+				warning: `Ambiguous model ID "${modelPattern}" matches multiple providers${defaultProviderHint}: ${availableVia}. Using "${chosenMatch.provider}/${chosenMatch.id}". Specify "provider/model" explicitly.`,
+			};
 		}
-		return exactMatches[0];
+		return { model: chosenMatch, warning: undefined, warningType: undefined };
 	}
 
 	// No exact match - fall back to partial matching
@@ -98,7 +105,7 @@ function tryMatchModel(
 	);
 
 	if (matches.length === 0) {
-		return undefined;
+		return { model: undefined, warning: undefined, warningType: undefined };
 	}
 
 	// Separate into aliases and dated versions
@@ -108,11 +115,11 @@ function tryMatchModel(
 	if (aliases.length > 0) {
 		// Prefer alias - if multiple aliases, pick the one that sorts highest
 		aliases.sort((a, b) => b.id.localeCompare(a.id));
-		return aliases[0];
+		return { model: aliases[0], warning: undefined, warningType: undefined };
 	} else {
 		// No alias found, pick latest dated version
 		datedVersions.sort((a, b) => b.id.localeCompare(a.id));
-		return datedVersions[0];
+		return { model: datedVersions[0], warning: undefined, warningType: undefined };
 	}
 }
 
@@ -121,6 +128,7 @@ export interface ParsedModelResult {
 	/** Thinking level if explicitly specified in pattern, undefined otherwise */
 	thinkingLevel?: ThinkingLevel;
 	warning: string | undefined;
+	warningType: "invalid-thinking-level" | "ambiguous-model-id" | undefined;
 }
 
 /**
@@ -142,16 +150,21 @@ export function parseModelPattern(
 	preferredProvider?: string,
 ): ParsedModelResult {
 	// Try exact match first
-	const exactMatch = tryMatchModel(pattern, availableModels, preferredProvider);
-	if (exactMatch) {
-		return { model: exactMatch, thinkingLevel: undefined, warning: undefined };
+	const match = tryMatchModel(pattern, availableModels, preferredProvider);
+	if (match.model) {
+		return {
+			model: match.model,
+			thinkingLevel: undefined,
+			warning: match.warning,
+			warningType: match.warningType,
+		};
 	}
 
 	// No match - try splitting on last colon if present
 	const lastColonIndex = pattern.lastIndexOf(":");
 	if (lastColonIndex === -1) {
 		// No colons, pattern simply doesn't match any model
-		return { model: undefined, thinkingLevel: undefined, warning: undefined };
+		return { model: undefined, thinkingLevel: undefined, warning: undefined, warningType: undefined };
 	}
 
 	const prefix = pattern.substring(0, lastColonIndex);
@@ -161,11 +174,11 @@ export function parseModelPattern(
 		// Valid thinking level - recurse on prefix and use this level
 		const result = parseModelPattern(prefix, availableModels, preferredProvider);
 		if (result.model) {
-			// Only use this thinking level if no warning from inner recursion
 			return {
 				model: result.model,
-				thinkingLevel: result.warning ? undefined : suffix,
+				thinkingLevel: result.warningType === "invalid-thinking-level" ? undefined : suffix,
 				warning: result.warning,
+				warningType: result.warningType,
 			};
 		}
 		return result;
@@ -177,6 +190,7 @@ export function parseModelPattern(
 				model: result.model,
 				thinkingLevel: undefined,
 				warning: `Invalid thinking level "${suffix}" in pattern "${pattern}". Using default instead.`,
+				warningType: "invalid-thinking-level",
 			};
 		}
 		return result;
