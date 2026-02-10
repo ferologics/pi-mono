@@ -1406,6 +1406,9 @@ export class InteractiveMode {
 				}
 				const result = setTheme(themeOrName, true);
 				if (result.success) {
+					if (this.settingsManager.getTheme() !== themeOrName) {
+						this.settingsManager.setTheme(themeOrName);
+					}
 					this.ui.requestRender();
 				}
 				return result;
