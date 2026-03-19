@@ -401,7 +401,11 @@ export class InteractiveMode {
 				hint("pasteImage", "to paste image"),
 				rawKeyHint("drop files", "to attach"),
 			].join("\n");
-			this.builtInHeader = new Text(`${logo}\n${instructions}`, 1, 0);
+			const onboarding = theme.fg(
+				"dim",
+				`Pi can explain its own features, look up its docs, and inspect source code. Ask it how to use or extend Pi.`,
+			);
+			this.builtInHeader = new Text(`${logo}\n${instructions}\n\n${onboarding}`, 1, 0);
 
 			// Setup UI layout
 			this.headerContainer.addChild(new Spacer(1));
